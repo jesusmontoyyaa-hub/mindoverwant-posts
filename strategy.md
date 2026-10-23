@@ -23,3 +23,4 @@ Mode: DAILY_MIX
 
 ## LOG
 - 2026-10-22: Page launched. First Reel published 9:04 PM and reported doing well by the owner. Baseline week scheduled at 1 post/day. Owner delegated the cadence decision; chose a 2-week 2-per-day test with the rule above.
+- 2026-10-23: Owner requested an extra Reel today; posted 1:15 PM (on top of the 10 AM card), so the baseline week has 4 Reels and 4 cards.
