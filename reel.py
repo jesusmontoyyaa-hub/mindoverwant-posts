@@ -9,10 +9,10 @@ reel_json: {"hook": "Read this if you feel like quitting.",
             "gold": [2],            # indexes of lines shown in gold (optional)
             "voice": true}          # deep male voiceover reads hook + quote (default false until approved)
 Lines are spoken as full sentences (a sentence ends at a line ending in . ! ?) and each
-line appears on screen as the voice reaches it. Music is generated here, and the voice is
+line appears on screen as the voice reaches it. Music is generated here (a different original track per Reel, seeded from its text or an optional "music" int), and the voice is
 the offline Piper "ryan" voice, deepened and slowed, so there is no copyright risk.
 """
-import json, os, re, subprocess, sys, tarfile, urllib.request, wave
+import json, os, re, subprocess, sys, tarfile, urllib.request, wave, zlib
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -214,33 +214,120 @@ def build_frames(spec, tm):
 
 
 # ---------- audio ----------
-def music_track(seconds, sr=44100):
-    """Original ambient track: Am - F - C - G pad with a soft pulse."""
+PROGRESSIONS = {
+    "minor_epic":   [[0, 3, 7], [8, 12, 15], [3, 7, 10], [10, 14, 17]],   # i VI III VII
+    "minor_drive":  [[0, 3, 7], [5, 8, 12], [8, 12, 15], [7, 11, 14]],    # i iv VI V
+    "minor_rise":   [[0, 3, 7], [10, 14, 17], [8, 12, 15], [10, 14, 17]], # i VII VI VII
+    "minor_dark":   [[0, 3, 7], [7, 10, 14], [8, 12, 15], [5, 8, 12]],    # i v VI iv
+    "major_hope":   [[0, 4, 7], [7, 11, 14], [9, 12, 16], [5, 9, 12]],    # I V vi IV
+    "major_warm":   [[0, 4, 7], [5, 9, 12], [9, 12, 16], [7, 11, 14]],    # I IV vi V
+}
+TIMBRES = ["pad", "piano", "pluck", "organ"]
+BEATS = ["heartbeat", "soft_kick_hat", "halftime", "none"]
+
+
+def _midi(n):
+    return 440.0 * 2 ** ((n - 69) / 12)
+
+
+def _tone(kind, f, tt, length):
+    """One note of a given timbre. tt: time since note start."""
+    if kind == "pad":
+        env = np.minimum(1, tt / 0.45) * np.exp(-np.maximum(0, tt - length) * 4)
+        w = np.sin(2 * np.pi * f * tt) + 0.5 * np.sin(2 * np.pi * f * 1.004 * tt) + 0.25 * np.sin(2 * np.pi * 2 * f * tt)
+    elif kind == "piano":
+        env = np.minimum(1, tt / 0.006) * np.exp(-tt * 1.6)
+        w = np.sin(2 * np.pi * f * tt) + 0.5 * np.sin(2 * np.pi * 2 * f * tt) * np.exp(-tt * 2) + 0.25 * np.sin(2 * np.pi * 3 * f * tt) * np.exp(-tt * 3)
+    elif kind == "pluck":
+        env = np.minimum(1, tt / 0.004) * np.exp(-tt * 4.5)
+        w = np.sin(2 * np.pi * f * tt) + 0.4 * np.sin(2 * np.pi * 2 * f * tt) * np.exp(-tt * 6)
+    else:  # organ
+        env = np.minimum(1, tt / 0.06) * np.exp(-np.maximum(0, tt - length) * 6)
+        w = np.sin(2 * np.pi * f * tt) + 0.3 * np.sin(2 * np.pi * 3 * f * tt) + 0.12 * np.sin(2 * np.pi * 5 * f * tt)
+    return env * w
+
+
+def music_track(seconds, sr=44100, seed=0):
+    """Original instrumental, different for every seed: key, progression, tempo,
+    instrument, arpeggio, bass and beat are all chosen from the seed."""
+    rng = np.random.default_rng(seed)
+    prog_name = list(PROGRESSIONS)[rng.integers(len(PROGRESSIONS))]
+    prog = PROGRESSIONS[prog_name]
+    root = int(rng.integers(45, 53))          # A2..E3
+    bpm = int(rng.integers(68, 104))
+    timbre = TIMBRES[rng.integers(len(TIMBRES))]
+    beat_style = BEATS[rng.integers(len(BEATS))]
+    use_arp = bool(rng.random() < 0.6)
+    use_bass = bool(rng.random() < 0.7)
+    beat = 60.0 / bpm
+    bar = 4 * beat
     t = np.arange(int(seconds * sr)) / sr
-    chords = [[220.0, 261.63, 329.63], [174.61, 220.0, 261.63], [130.81, 196.0, 261.63], [196.0, 246.94, 293.66]]
-    bar = 2.4
     out = np.zeros_like(t)
-    for k in range(int(seconds / bar) + 2):
-        ch = chords[k % 4]
+    n_bars = int(seconds / bar) + 2
+    for k in range(n_bars):
+        ch = prog[k % len(prog)]
         s = k * bar
-        m = (t >= s) & (t < s + bar + 0.6)
+        hold = bar if timbre in ("pad", "organ") else bar
+        m = (t >= s) & (t < s + bar + 1.0)
         if not m.any():
             continue
         tt = t[m] - s
-        env = np.minimum(1, tt / 0.5) * np.exp(-np.maximum(0, tt - bar) * 4)
-        for f in ch:
-            out[m] += env * (0.5 * np.sin(2 * np.pi * f * tt) + 0.2 * np.sin(2 * np.pi * 2 * f * tt))
-    for b in np.arange(0, seconds, 0.6):
-        m = (t >= b) & (t < b + 0.25)
-        tt = t[m] - b
-        out[m] += 0.9 * np.sin(2 * np.pi * 55 * tt) * np.exp(-tt * 18)
-    fade = np.clip(np.minimum(t / 0.8, (seconds - t) / 1.2), 0, 1)
+        for iv in ch:
+            out[m] += 0.32 * _tone(timbre, _midi(root + 12 + iv), tt, hold)
+        if use_bass:
+            out[m] += 0.45 * _tone("pad" if timbre != "pad" else "organ", _midi(root + ch[0] - 12 if ch[0] < 12 else root + ch[0] - 24), tt, bar) * 0.8
+        if use_arp:
+            notes = [root + 24 + iv for iv in ch] + [root + 36 + ch[0]]
+            step = beat / 2
+            for j in range(8):
+                a0 = s + j * step
+                ma = (t >= a0) & (t < a0 + 1.2)
+                if ma.any():
+                    out[ma] += 0.16 * _tone("pluck", _midi(notes[j % len(notes)]), t[ma] - a0, step)
+    # drums
+    noise = rng.standard_normal(len(t))
+    hat_src = np.diff(np.concatenate([[0], noise]))  # crude high-pass
+
+    def kick(at, gain=1.0):
+        mk = (t >= at) & (t < at + 0.35)
+        tk = t[mk] - at
+        f = 45 + 75 * np.exp(-tk * 30)
+        out[mk] += gain * 0.9 * np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-tk * 12)
+
+    def hat(at, gain=1.0):
+        i0 = int(at * sr)
+        n = int(0.06 * sr)
+        if i0 + n < len(out):
+            out[i0:i0 + n] += gain * 0.08 * hat_src[i0:i0 + n] * np.exp(-np.arange(n) / sr * 60)
+
+    def snare(at):
+        i0 = int(at * sr)
+        n = int(0.18 * sr)
+        if i0 + n < len(out):
+            out[i0:i0 + n] += 0.22 * noise[i0:i0 + n] * np.exp(-np.arange(n) / sr * 22)
+
+    for k in range(n_bars):
+        s = k * bar
+        if beat_style == "heartbeat":
+            kick(s, 0.9); kick(s + beat * 0.45, 0.6)
+            kick(s + 2 * beat, 0.9); kick(s + 2.45 * beat, 0.6)
+        elif beat_style == "soft_kick_hat":
+            kick(s); kick(s + 2 * beat)
+            for j in range(8):
+                hat(s + j * beat / 2, 1.0 if j % 2 else 0.6)
+        elif beat_style == "halftime":
+            kick(s); snare(s + 2 * beat)
+            for j in range(4):
+                hat(s + j * beat + beat / 2, 0.7)
+    fade = np.clip(np.minimum(t / 0.6, (seconds - t) / 1.0), 0, 1)
     out = out * fade
-    return out / (np.abs(out).max() + 1e-9)
+    music_track.last = f"{prog_name}, key {root % 12}, {bpm} bpm, {timbre}, beat={beat_style}, arp={use_arp}, bass={use_bass}"
+    out = out / (np.sqrt(np.mean(out ** 2)) + 1e-9) * 0.22  # same loudness for every track
+    return np.tanh(out * 1.6) / np.tanh(1.6)  # gentle limiter
 
 
-def mix(path, seconds, clips, sr=44100):
-    music = music_track(seconds, sr)
+def mix(path, seconds, clips, sr=44100, seed=0):
+    music = music_track(seconds, sr, seed)
     voice = np.zeros_like(music)
     for start, wp in clips:
         v = read_wav(wp)
@@ -271,7 +358,8 @@ def main():
     os.makedirs(workdir, exist_ok=True)
     tm, clips = plan_timing(spec, workdir)
     wav = out + ".wav"
-    mix(wav, tm["total"] + 0.3, clips)
+    seed = int(spec.get("music", zlib.crc32((spec["hook"] + "|".join(spec["lines"])).encode())))
+    mix(wav, tm["total"] + 0.3, clips, seed=seed)
     for _, wp in clips:
         os.remove(wp)
     cover_i = int((tm["hold_end"] - 0.8) * FPS)
@@ -286,7 +374,7 @@ def main():
     p.stdin.close()
     p.wait()
     os.remove(wav)
-    print(f"reel: {out} ({tm['total']:.1f}s, voice={'on' if clips else 'off'})")
+    print(f"reel: {out} ({tm['total']:.1f}s, voice={'on' if clips else 'off'}, music: {music_track.last})")
 
 
 if __name__ == "__main__":
