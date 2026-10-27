@@ -102,11 +102,11 @@ def plan_timing(spec, workdir):
             t += d + 0.45
         hold_end = t + 1.4
     else:
-        hook_end = 2.2
-        quote_start = hook_end + 0.3
-        line_at = [quote_start + 1.15 * i for i in range(len(lines))]
-        hold_end = quote_start + 1.15 * len(lines) + 2.6
-    total = hold_end + 2.6
+        hook_end = 1.5
+        quote_start = hook_end + 0.15
+        line_at = [quote_start + 0.8 * i for i in range(len(lines))]
+        hold_end = quote_start + 0.8 * len(lines) + 1.8
+    total = hold_end + 1.8
     return {"hook_end": hook_end, "quote_start": quote_start, "line_at": line_at,
             "hold_end": hold_end, "total": total}, clips
 
@@ -182,10 +182,10 @@ def build_frames(spec, tm):
         ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(ov)
         if t < hook_end:
-            a = ease(t / 0.35) * (1 - ease((t - (hook_end - 0.3)) / 0.3))
+            a = (1 - ease((t - (hook_end - 0.3)) / 0.3))
             hy = H * 0.42 - len(hook_lines) * 55
             for j, hl in enumerate(hook_lines):
-                text_center(d, hy + j * 110 + (1 - ease(t / 0.4)) * 40, hl, fh, INK, a)
+                text_center(d, hy + j * 110, hl, fh, INK, a)
             yb = hy + len(hook_lines) * 110 + 30
             d.rectangle([W / 2 - 70, yb, W / 2 + 70, yb + 6], fill=GOLD + (int(255 * a),))
         elif t < hold_end:
