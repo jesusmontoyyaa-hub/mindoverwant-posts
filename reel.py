@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 W, H, FPS = 1080, 1920, 30
 REEL_SECONDS = 7.1  # owner: every Reel is exactly 7.1 s
+HOOK_TYPE = 0.6     # seconds to type the hook
 SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
 SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf"
 BG, INK, GOLD, DIM = (14, 14, 16), (245, 241, 232), (212, 168, 75), (150, 145, 135)
@@ -196,7 +197,23 @@ def build_frames(spec, tm):
         img = background(t).convert("RGBA")
         ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(ov)
-        if t < hook_end:
+        if t < hook_end and tm.get("typewriter"):
+            # hook types out fast (done by HOOK_TYPE s), cursor blinks while it holds
+            a = 1 - ease((t - (hook_end - 0.2)) / 0.2)
+            hy = H * 0.42 - len(hook_lines) * 55
+            total_c = sum(len(x) for x in hook_lines)
+            k = int(total_c * min(1.0, (t + 1 / FPS) / HOOK_TYPE))
+            for j, hl in enumerate(hook_lines):
+                if k <= 0:
+                    break
+                part = hl[:k]
+                k -= len(hl)
+                x = (W - fh.getlength(hl)) / 2
+                d.text((x, hy + j * 110), part, font=fh, fill=INK + (int(255 * a),))
+                if k <= 0 and (t < HOOK_TYPE or int(t * 2.5) % 2 == 0):
+                    cx = x + fh.getlength(part) + 8
+                    d.rectangle([cx, hy + j * 110 + 10, cx + 7, hy + j * 110 + 100], fill=GOLD + (int(255 * a),))
+        elif t < hook_end:
             a = (1 - ease((t - (hook_end - 0.3)) / 0.3))
             hy = H * 0.42 - len(hook_lines) * 55
             for j, hl in enumerate(hook_lines):
@@ -235,7 +252,23 @@ def build_frames(spec, tm):
         else:
             lt = t - hold_end
             if tm.get("typewriter"):
-                lt = lt * 2.0  # compress the 1 s end card animation
+                a = ease(lt / 0.25)
+                mark(d, W / 2, H * 0.40, 175, a)
+                f1 = F(SANS, 48)
+                t1 = "MIND OVER WANT"
+                n1 = int(len(t1) * min(1, lt / 0.35))
+                x1 = (W - f1.getlength(t1)) / 2
+                d.text((x1, H * 0.40 + 240), t1[:n1], font=f1, fill=DIM + (255,))
+                fb = F(SANS, 56)
+                label = "FOLLOW " + HANDLE
+                n2 = int(len(label) * min(1, max(0, lt - 0.35) / 0.4))
+                bw = fb.getlength(label) + 100
+                by = H * 0.40 + 360
+                if n2 > 0:
+                    d.rounded_rectangle([(W - bw) / 2, by, (W + bw) / 2, by + 110], 55, fill=GOLD + (255,))
+                    d.text(((W - fb.getlength(label)) / 2, by + 24), label[:n2], font=fb, fill=BG + (255,))
+                yield Image.alpha_composite(img, ov).convert("RGB")
+                continue
             a = ease(lt / 0.5)
             mark(d, W / 2, H * 0.40, int(170 + 10 * ease(lt / 1.5)), a)
             text_center(d, H * 0.40 + 240, "MIND OVER WANT", F(SANS, 48), DIM, a)
@@ -362,8 +395,122 @@ def music_track(seconds, sr=44100, seed=0):
     return np.tanh(out * 1.6) / np.tanh(1.6)  # gentle limiter
 
 
-def mix(path, seconds, clips, sr=44100, seed=0):
-    music = music_track(seconds, sr, seed)
+# ---------- dark "grind mode" trap instrumental (default for Reels) ----------
+def _sat(x, drive):
+    return np.tanh(x * drive) / np.tanh(drive)
+
+
+def grind_track(seconds, sr=44100, seed=0, drop_at=1.7):
+    """Dark trap / grind-mode beat, original every time. Intro (drone + bell + riser)
+    until drop_at, then the beat drops: distorted 808, hard kick, clap, hat rolls."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(seconds * sr)) / sr
+    out = np.zeros_like(t)
+    bar = drop_at                      # one intro bar, then the drop lands on bar 2
+    step = bar / 16
+    root = int(rng.integers(26, 33))   # 808 root D1..A1
+    # phrygian / natural minor: dark intervals
+    scale = [0, 1, 3, 5, 7, 8, 10]
+    noise = rng.standard_normal(len(t) + 4 * sr)   # padded so late hits never run off the end
+    hp = np.diff(np.concatenate([[0], np.diff(np.concatenate([[0], noise]))]))  # crude high-pass
+
+    def add(i0, sig):
+        i0 = int(i0)
+        n = min(len(sig), len(out) - i0)
+        if n > 0 and i0 >= 0:
+            out[i0:i0 + n] += sig[:n]
+
+    def env_t(dur):
+        return np.arange(int(dur * sr)) / sr
+
+    # drone: low detuned minor pad, swelling
+    for iv, g in ((0, 0.20), (7, 0.10), (3, 0.08), (12, 0.06)):
+        f = _midi(root + 24 + iv)
+        out += g * (np.sin(2 * np.pi * f * t) + np.sin(2 * np.pi * f * 1.006 * t) + 0.5 * np.sin(2 * np.pi * f * 0.497 * t))
+    # dark bell melody (inharmonic partials), 8th notes, seeded motif
+    motifs = [[0, 3, 1, 0, 7, 8, 7, 3], [0, 1, 0, 8, 7, 3, 1, 0], [7, 8, 7, 3, 0, 3, 1, 0], [0, 3, 7, 8, 7, 3, 1, 3]]
+    mot = motifs[rng.integers(len(motifs))]
+    k = 0
+    at = 0.0
+    while at < seconds:
+        f = _midi(root + 48 + mot[k % len(mot)])
+        tt = env_t(1.2)
+        sig = (np.sin(2 * np.pi * f * tt) + 0.45 * np.sin(2 * np.pi * f * 2.76 * tt) * np.exp(-tt * 6)
+               + 0.2 * np.sin(2 * np.pi * f * 5.4 * tt) * np.exp(-tt * 10)) * np.exp(-tt * 3.2) * np.minimum(1, tt / 0.003)
+        add(at * sr, 0.13 * sig)
+        k += 1
+        at += 2 * step
+    # riser into the drop
+    m = (t > drop_at - 0.9) & (t < drop_at)
+    r = (t[m] - (drop_at - 0.9)) / 0.9
+    out[m] += 0.07 * hp[:len(t)][m] * r ** 3
+
+    def kick(at, g=1.0):
+        tt = env_t(0.45)
+        f = 42 + 120 * np.exp(-tt * 35)
+        sig = np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-tt * 9)
+        sig[:int(0.004 * sr)] += 0.6 * hp[:int(0.004 * sr)]
+        add(at * sr, g * 1.0 * _sat(sig, 2.0))
+
+    def eight08(at, note, dur, glide_to=None):
+        tt = env_t(dur)
+        f0 = _midi(note)
+        f = np.full_like(tt, f0)
+        if glide_to is not None:
+            f = f0 + (_midi(glide_to) - f0) * np.clip((tt - dur * 0.6) / (dur * 0.25), 0, 1)
+        sig = np.sin(2 * np.pi * np.cumsum(f) / sr) * np.minimum(1, tt / 0.005) * np.exp(-tt * 1.4)
+        add(at * sr, 1.0 * _sat(sig, 3.0))
+
+    def clap(at):
+        for off in (0, 0.011, 0.023):
+            i0 = int((at + off) * sr)
+            tt = env_t(0.16 if off == 0.023 else 0.02)
+            add(i0, 0.22 * hp[i0:i0 + len(tt)] * np.exp(-tt * 28))
+
+    def hat(at, g=1.0):
+        i0 = int(at * sr)
+        tt = env_t(0.04)
+        add(i0, g * 0.06 * hp[i0:i0 + len(tt)] * np.exp(-tt * 110))
+
+    def impact(at, g=1.0):
+        tt = env_t(1.6)
+        f = 30 + 60 * np.exp(-tt * 6)
+        sig = np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-tt * 2.2)
+        i0 = int(at * sr)
+        nz = noise[i0:i0 + len(tt)]
+        sig[:len(nz)] += 0.08 * nz * np.exp(-tt[:len(nz)] * 8)
+        add(i0, g * 0.9 * sig)
+
+    impact(0.0, 0.8)          # hit on frame 1
+    impact(drop_at, 1.0)      # hit on the drop
+    n_bars = int((seconds - drop_at) / bar) + 2
+    bass_pats = [[(0, root, 6), (6, root, 4), (10, root + 8, 6)],
+                 [(0, root, 8), (10, root + 3, 3), (13, root + 1, 3)],
+                 [(0, root, 6), (7, root, 3), (10, root + 7, 6, root + 8)]]
+    bp = bass_pats[rng.integers(len(bass_pats))]
+    roll_bar = int(rng.integers(0, 2))
+    for b in range(n_bars):
+        s0 = drop_at + b * bar
+        kick(s0); kick(s0 + 10 * step, 0.85)
+        if b % 2 == 1:
+            kick(s0 + 7 * step, 0.6)
+        clap(s0 + 8 * step)
+        for st in range(0, 16, 2):
+            hat(s0 + st * step, 0.9 if st % 4 else 0.6)
+        if b % 2 == roll_bar:   # trap hat roll (32nds) at the end of the bar
+            for j in range(8):
+                hat(s0 + 12 * step + j * step / 2, 0.45 + 0.07 * j)
+        for p in bp:
+            eight08(s0 + p[0] * step, p[1], p[2] * step + 0.05, p[3] if len(p) > 3 else None)
+    fade = np.clip(np.minimum(t / 0.01, (seconds - t) / 0.35), 0, 1)
+    out = out * fade
+    grind_track.last = f"grind, 808 root {root}, {60 / (bar / 4):.0f} bpm, motif {mot}"
+    out = out / (np.sqrt(np.mean(out ** 2)) + 1e-9) * 0.24
+    return _sat(out, 1.8)
+
+
+def mix(path, seconds, clips, sr=44100, seed=0, style="grind", drop_at=1.7):
+    music = grind_track(seconds, sr, seed, drop_at) if style == "grind" else music_track(seconds, sr, seed)
     voice = np.zeros_like(music)
     for start, wp in clips:
         v = read_wav(wp)
@@ -378,7 +525,7 @@ def mix(path, seconds, clips, sr=44100, seed=0):
         duck = 1 - 0.55 * np.clip(env * 8, 0, 1)
         out = music * 0.30 * duck + voice
     else:
-        out = music * 0.6
+        out = music * 0.85
     out = out / max(1.0, np.abs(out).max())
     with wave.open(path, "w") as w:
         w.setnchannels(1)
@@ -395,7 +542,7 @@ def main():
     tm, clips = plan_timing(spec, workdir)
     wav = out + ".wav"
     seed = int(spec.get("music", zlib.crc32((spec["hook"] + "|".join(spec["lines"])).encode())))
-    mix(wav, tm["total"] + 0.3, clips, seed=seed)
+    mix(wav, tm["total"] + 0.3, clips, seed=seed, style=spec.get("music_style", "grind"), drop_at=tm["quote_start"])
     for _, wp in clips:
         os.remove(wp)
     cover_i = int((tm["hold_end"] - 0.8) * FPS)
@@ -410,7 +557,7 @@ def main():
     p.stdin.close()
     p.wait()
     os.remove(wav)
-    print(f"reel: {out} ({tm['total']:.1f}s, voice={'on' if clips else 'off'}, music: {music_track.last})")
+    print(f"reel: {out} ({tm['total']:.1f}s, voice={'on' if clips else 'off'}, music: {grind_track.last if spec.get('music_style', 'grind') == 'grind' else music_track.last})")
 
 
 if __name__ == "__main__":
