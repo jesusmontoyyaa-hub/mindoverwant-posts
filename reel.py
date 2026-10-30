@@ -107,11 +107,11 @@ def plan_timing(spec, workdir):
             t += d + 0.45
         hold_end = t + 1.4
     else:
-        # Typewriter timing, fixed 7.1 s total: hook 0-1.2 s, typing 1.3-4.6 s,
+        # Typewriter timing, fixed 7.1 s total: hook 0-1.6 s, typing 1.7-4.7 s,
         # hold the full quote to 6.1 s, end card 6.1-7.1 s.
-        hook_end = 1.2
-        quote_start = 1.3
-        type_dur = 3.3
+        hook_end = 1.6
+        quote_start = 1.7
+        type_dur = 3.0
         n = sum(len(l) for l in lines)
         cps = n / type_dur
         line_at, done = [], 0
