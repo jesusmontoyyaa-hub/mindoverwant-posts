@@ -108,10 +108,10 @@ def plan_timing(spec, workdir):
             t += d + 0.45
         hold_end = t + 1.4
     else:
-        # Typewriter timing, fixed 7.1 s total: hook 0-1.6 s, typing 1.7-4.7 s,
-        # hold the full quote to 6.1 s, end card 6.1-7.1 s.
-        hook_end = 1.6
-        quote_start = 1.7
+        # Typewriter timing, fixed 7.1 s total: hook 0-2.0 s, typing 2.1-5.1 s,
+        # hold the full quote to 6.55 s, short end card 6.55-7.1 s.
+        hook_end = 2.0
+        quote_start = 2.1
         type_dur = 3.0
         n = sum(len(l) for l in lines)
         cps = n / type_dur
@@ -119,7 +119,7 @@ def plan_timing(spec, workdir):
         for l in lines:
             line_at.append(quote_start + done / cps)
             done += len(l)
-        hold_end = 6.1
+        hold_end = 6.55
         return {"hook_end": hook_end, "quote_start": quote_start, "line_at": line_at,
                 "hold_end": hold_end, "total": REEL_SECONDS, "cps": cps, "typewriter": True}, clips
     total = hold_end + 1.8
@@ -252,16 +252,16 @@ def build_frames(spec, tm):
         else:
             lt = t - hold_end
             if tm.get("typewriter"):
-                a = ease(lt / 0.25)
+                a = ease(lt / 0.15)
                 mark(d, W / 2, H * 0.40, 175, a)
                 f1 = F(SANS, 48)
                 t1 = "MIND OVER WANT"
-                n1 = int(len(t1) * min(1, lt / 0.35))
+                n1 = int(len(t1) * min(1, lt / 0.2))
                 x1 = (W - f1.getlength(t1)) / 2
                 d.text((x1, H * 0.40 + 240), t1[:n1], font=f1, fill=DIM + (255,))
                 fb = F(SANS, 56)
                 label = "FOLLOW " + HANDLE
-                n2 = int(len(label) * min(1, max(0, lt - 0.35) / 0.4))
+                n2 = int(len(label) * min(1, max(0, lt - 0.2) / 0.25))
                 bw = fb.getlength(label) + 100
                 by = H * 0.40 + 360
                 if n2 > 0:
@@ -406,7 +406,7 @@ def grind_track(seconds, sr=44100, seed=0, drop_at=1.7):
     rng = np.random.default_rng(seed)
     t = np.arange(int(seconds * sr)) / sr
     out = np.zeros_like(t)
-    bar = drop_at                      # one intro bar, then the drop lands on bar 2
+    bar = 4 * 60 / 141                 # 141 bpm; intro runs until drop_at, then the beat drops
     step = bar / 16
     root = int(rng.integers(26, 33))   # 808 root D1..A1
     # phrygian / natural minor: dark intervals
@@ -504,7 +504,7 @@ def grind_track(seconds, sr=44100, seed=0, drop_at=1.7):
             eight08(s0 + p[0] * step, p[1], p[2] * step + 0.05, p[3] if len(p) > 3 else None)
     fade = np.clip(np.minimum(t / 0.01, (seconds - t) / 0.35), 0, 1)
     out = out * fade
-    grind_track.last = f"grind, 808 root {root}, {60 / (bar / 4):.0f} bpm, motif {mot}"
+    grind_track.last = f"grind, 808 root {root}, 141 bpm, drop {drop_at}s, motif {mot}"
     out = out / (np.sqrt(np.mean(out ** 2)) + 1e-9) * 0.24
     return _sat(out, 1.8)
 
