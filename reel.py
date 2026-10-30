@@ -8,7 +8,11 @@ reel_json: {"hook": "Read this if you feel like quitting.",
             "lines": ["Discipline is", "remembering what you want", "more than what you want", "right now."],
             "gold": [2],            # indexes of lines shown in gold (optional)
             "voice": true}          # deep male voiceover reads hook + quote (default false until approved)
-Lines are spoken as full sentences (a sentence ends at a line ending in . ! ?) and each
+Without voice (the default): exactly 7.1 s, hook on frame 1, quote typed out with a typewriter
+effect and gold cursor, then a 1 s follow card. Trending Instagram audio is attached at
+scheduling time via Metricool instagramData.audioConfiguration (videoVolume 0 mutes the
+built-in fallback music).
+With voice: lines are spoken as full sentences (a sentence ends at a line ending in . ! ?) and each
 line appears on screen as the voice reaches it. Music is generated here (a different original track per Reel, seeded from its text or an optional "music" int), and the voice is
 the offline Piper "ryan" voice, deepened and slowed, so there is no copyright risk.
 """
@@ -17,6 +21,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 W, H, FPS = 1080, 1920, 30
+REEL_SECONDS = 7.1  # owner: every Reel is exactly 7.1 s
 SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
 SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf"
 BG, INK, GOLD, DIM = (14, 14, 16), (245, 241, 232), (212, 168, 75), (150, 145, 135)
@@ -102,10 +107,20 @@ def plan_timing(spec, workdir):
             t += d + 0.45
         hold_end = t + 1.4
     else:
-        hook_end = 1.5
-        quote_start = hook_end + 0.15
-        line_at = [quote_start + 0.8 * i for i in range(len(lines))]
-        hold_end = quote_start + 0.8 * len(lines) + 1.8
+        # Typewriter timing, fixed 7.1 s total: hook 0-1.2 s, typing 1.3-4.6 s,
+        # hold the full quote to 6.1 s, end card 6.1-7.1 s.
+        hook_end = 1.2
+        quote_start = 1.3
+        type_dur = 3.3
+        n = sum(len(l) for l in lines)
+        cps = n / type_dur
+        line_at, done = [], 0
+        for l in lines:
+            line_at.append(quote_start + done / cps)
+            done += len(l)
+        hold_end = 6.1
+        return {"hook_end": hook_end, "quote_start": quote_start, "line_at": line_at,
+                "hold_end": hold_end, "total": REEL_SECONDS, "cps": cps, "typewriter": True}, clips
     total = hold_end + 1.8
     return {"hook_end": hook_end, "quote_start": quote_start, "line_at": line_at,
             "hold_end": hold_end, "total": total}, clips
@@ -176,7 +191,7 @@ def build_frames(spec, tm):
     y0 = H * 0.46 - (len(lines) * lh) / 2
     fh = F(SERIF, 84)
     hook_lines = wrap(hook, fh, W - 200)
-    for i in range(int(total * FPS)):
+    for i in range(int(round(total * FPS))):
         t = i / FPS
         img = background(t).convert("RGBA")
         ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -191,6 +206,25 @@ def build_frames(spec, tm):
         elif t < hold_end:
             fade_out = 1 - ease((t - (hold_end - 0.35)) / 0.35)
             text_center(d, y0 - 220, "“", F(SERIF, 200), GOLD, ease((t - hook_end) / 0.5) * fade_out)
+            if tm.get("typewriter"):
+                cps = tm["cps"]
+                for j, line in enumerate(lines):
+                    k = int((t - line_at[j]) * cps)
+                    if k <= 0:
+                        continue
+                    part = line[:min(k, len(line))]
+                    x = (W - fq.getlength(line)) / 2  # anchor at final centered position
+                    y = y0 + j * lh
+                    col = GOLD if j in gold else INK
+                    d.text((x, y), part, font=fq, fill=col + (int(255 * fade_out),))
+                    typing = k < len(line) or (j == len(lines) - 1 and int(t * 2.5) % 2 == 0)
+                    nxt_started = j + 1 < len(lines) and t >= line_at[j + 1]
+                    if typing and not nxt_started:
+                        cx = x + fq.getlength(part) + 8
+                        d.rectangle([cx, y + size * 0.12, cx + 7, y + size * 1.12], fill=GOLD + (int(255 * fade_out),))
+                text_center(d, H - 300, HANDLE, F(SANS, 44), DIM, ease((t - q0) / 0.8) * fade_out)
+                yield Image.alpha_composite(img, ov).convert("RGB")
+                continue
             for j, line in enumerate(lines):
                 lt = t - line_at[j]
                 a = ease(lt / 0.45) * fade_out
@@ -200,6 +234,8 @@ def build_frames(spec, tm):
             text_center(d, H - 300, HANDLE, F(SANS, 44), DIM, ease((t - q0) / 0.8) * fade_out)
         else:
             lt = t - hold_end
+            if tm.get("typewriter"):
+                lt = lt * 2.0  # compress the 1 s end card animation
             a = ease(lt / 0.5)
             mark(d, W / 2, H * 0.40, int(170 + 10 * ease(lt / 1.5)), a)
             text_center(d, H * 0.40 + 240, "MIND OVER WANT", F(SANS, 48), DIM, a)
@@ -365,7 +401,7 @@ def main():
     cover_i = int((tm["hold_end"] - 0.8) * FPS)
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
            "-i", wav, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "medium", "-crf", "20",
-           "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", out]
+           "-c:a", "aac", "-b:a", "160k", "-t", f"{tm['total']:.3f}", "-movflags", "+faststart", out]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     for i, f in enumerate(build_frames(spec, tm)):
         if i == cover_i:
